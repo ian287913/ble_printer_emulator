@@ -1,0 +1,12 @@
+bash
+
+# 終端機 1
+sudo systemctl restart bluetooth
+sleep 2
+sudo btmgmt bondable off
+sudo btmgmt sc off
+sudo btmgmt io-cap 3
+sudo python3 auto_pair_agent.py
+
+# 終端機 2（等 Agent 啟動後）
+sudo python3 main_hci.py
