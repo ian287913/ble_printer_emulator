@@ -1,0 +1,74 @@
+pi@raspberrypi:~/Desktop/ble_printer_emulator/source $ sudo ./start_printer_v4.sh
+========================================
+BLE Printer Emulator v4
+Complete No-Pairing Solution
+========================================
+
+[1/6] Stopping all bluetooth processes...
+[2/6] Unblocking bluetooth...
+[3/6] Starting bluetoothd with disabled plugins...
+  bluetoothd started (PID: 5199)
+D-Bus setup failed: Name already in use
+[4/6] Configuring with btmgmt...
+hci0 Set Powered complete, settings: powered connectable discoverable bondable le advertising 
+hci0 Set Bondable complete, settings: powered connectable discoverable le advertising 
+hci0 Set Secure Connections complete, settings: powered connectable discoverable le advertising 
+IO Capabilities successfully set
+hci0 Set Discoverable complete, settings: powered connectable discoverable le advertising 
+hci0 Set Connectable complete, settings: powered connectable discoverable le advertising 
+hci0 Set Advertising complete, settings: powered connectable discoverable le advertising 
+
+[5/6] Current settings:
+Index list with 1 item
+hci0:	Primary controller
+	addr D8:3A:DD:25:0E:C7 version 9 manufacturer 305 class 0x000000
+	supported settings: powered connectable fast-connectable discoverable bondable link-security ssp br/edr le advertising secure-conn debug-keys privacy configuration static-addr phy-configuration 
+	current settings: powered connectable discoverable le advertising 
+	name BT-B36
+	short name 
+hci0:	Configuration options
+	supported options: public-address 
+	missing options: 
+
+OK: Bondable is disabled
+WARNING: Secure Connections may still be enabled!
+
+[6/6] Starting emulator...
+========================================
+
+
+============================================================
+BLE Printer Emulator v3 - BT-B36
+Auto-Accept All Pairing Requests
+============================================================
+
+[00:02:37.748] Bondable enforcer started
+[00:02:37.760] Adapter: /org/bluez/hci0
+[00:02:37.797] Adapter configured
+[00:02:37.798] Registering AutoAcceptAgent...
+[00:02:37.811] AutoAcceptAgent initialized
+[00:02:37.817]   Agent registered
+[00:02:37.819]   Agent set as default
+[00:02:37.824] Created 7 services
+[00:02:37.825] Registering GATT application...
+[00:02:37.906] GATT application registered
+[00:02:37.906] 
+[00:02:37.906] ============================================================
+[00:02:37.906] READY! "BT-B36" is advertising
+[00:02:37.906] ============================================================
+[00:02:37.906] 
+[00:02:37.906] Features:
+[00:02:37.906]   - Auto-Accept Agent: Enabled
+[00:02:37.906]   - Bondable Enforcer: Running (every 5s)
+[00:02:37.906] 
+[00:02:37.906] Services:
+[00:02:37.907]   - Print Service (5f9b)
+[00:02:37.907]   - Print Service 2 (5f9b)
+[00:02:37.907]   - Custom Service (5f9b)
+[00:02:37.907]   - UART Service (d205)
+[00:02:37.907]   - Service 18F0 (5f9b)
+[00:02:37.907]   - Service E781 (aef0)
+[00:02:37.907]   - Device Information (5f9b)
+[00:02:37.907] 
+[00:02:37.907] Waiting for connections...
+[00:02:37.907
