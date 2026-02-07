@@ -24,11 +24,25 @@
 | 2. 準備工作環境 | ✅ 完成 | |
 | 3. 修改原始碼 | ✅ 完成 | 5 項修改全部完成 |
 | 4. 編譯安裝 | ✅ 完成 | configure 需額外參數 |
-| 5. 設定 BlueZ 組態 | ✅ 完成 | |
+| 5. 設定 BlueZ 組態 | ✅ 完成 | 含 systemd override (`--noplugin`) |
 | 6. 重啟服務並測試 | ✅ 完成 | bluetoothd 5.82 運行中 |
-| 7. 建立測試用的 GATT Server | ✅ 完成 | 腳本已修正並可運行 |
-| 8. 驗證修改是否成功 | ✅ 完成 | 7 Services 全部通過驗證 |
+| 7. 建立測試用的 GATT Server | ✅ 完成 | 7 Services 完整模擬 |
+| 8. 驗證修改是否成功 | ✅ 完成 | 連線/寫入/通知全部通過 |
 | 9. 還原方法 | 📋 備用 | |
+
+### 待處理項目
+
+| 項目 | 狀態 | 說明 |
+|------|------|------|
+| 移除重複 Device Information | 🔧 調查中 | BlueZ 內建 `deviceinfo` plugin 多註冊一個只含 PnP ID 的 0x180A Service；`--noplugin=deviceinfo` 已傳入但未生效，需用 debug log 確認原因 |
+| 移除 MIDI BLE Service | 🔧 調查中 | BlueZ 內建 `midi` plugin 多註冊 03b80e5a-... Service；`--noplugin=midi` 同樣未生效 |
+
+**目前排查進度：**
+- [x] main.conf `DisablePlugins` → BlueZ 5.82 不支援此設定鍵
+- [x] systemd override `--noplugin=deviceinfo,midi` → 已套用，`ps aux` 確認參數有傳入
+- [x] `grep BLUETOOTH_PLUGIN_DEFINE` → 確認 plugin 名稱為 `deviceinfo` 和 `midi`
+- [ ] 用 debug 模式 (`bluetoothd -n -d`) 確認 plugin 是否確實被 exclude 或仍被載入
+- [ ] 若 `--noplugin` 無法阻止載入，可能需修改原始碼移除這兩個 plugin 後重新編譯
 
 ---
 
@@ -214,7 +228,6 @@ sudo nano /etc/bluetooth/main.conf
 Name = BT-B36
 Class = 0x000540
 DiscoverableTimeout = 0
-Pairable = false
 PairableTimeout = 0
 Privacy = off
 JustWorksRepairing = always
@@ -225,6 +238,35 @@ AutoEnable = true
 [GATT]
 ReconnectIntervals=1,2,4
 ```
+
+> **注意**：BlueZ 5.82 的 main.conf 不支援 `DisablePlugins` 和 `Pairable` 設定鍵。
+> 停用 plugin 需透過 systemd service 的 `--noplugin` 參數（見 5.2 節）。
+> Pairable 由 Python 腳本透過 D-Bus adapter property 設定。
+
+### 5.2 停用多餘的 BlueZ Plugin
+
+真實 BT-B36 印表機沒有以下服務，但 BlueZ 會自動註冊：
+
+| Plugin | 產生的多餘 Service | 說明 |
+|--------|-------------------|------|
+| `deviceinfo` | Device Information (0x180A) 含 PnP ID | 與腳本的完整 Device Information 重複 |
+| `midi` | MIDI BLE Service (03b80e5a-...) | 印表機不需要 MIDI 功能 |
+
+透過建立 systemd override 來傳入 `--noplugin` 參數：
+
+```bash
+sudo mkdir -p /etc/systemd/system/bluetooth.service.d
+sudo tee /etc/systemd/system/bluetooth.service.d/override.conf << 'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/libexec/bluetooth/bluetoothd --noplugin=deviceinfo,midi
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart bluetooth
+```
+
+> **說明**：第一行 `ExecStart=`（空值）是必要的，用來清除原本的 ExecStart，
+> 否則 systemd 會同時執行兩個 ExecStart。
 
 ---
 
@@ -613,6 +655,8 @@ GATT 服務已註冊
 - [x] 寫入 ff02 後 ff01 收到 ACK 通知（0x00）
 - [x] Device Information 可讀取（Manufacturer, Model 等）
 - [x] 終端機顯示所有操作的 log
+- [ ] 只有一個 Device Information Service（無 BlueZ 內建重複）
+- [ ] 無多餘的 MIDI BLE Service
 
 ---
 
@@ -687,6 +731,32 @@ sudo /usr/libexec/bluetooth/bluetoothd -n -d
 
 這是因為缺少 `ObjectManager` 介面。確保 `Application` 類別有實作 `GetManagedObjects` 方法。
 
+**Q: 出現多餘的 Device Information 或 MIDI Service**
+
+BlueZ 內建 `deviceinfo` plugin 會自動註冊一個只有 PnP ID 的 Device Information Service，
+`midi` plugin 會註冊 MIDI BLE Service。
+
+**方法一**：透過 systemd override 傳入 `--noplugin` 參數：
+```bash
+sudo mkdir -p /etc/systemd/system/bluetooth.service.d
+sudo tee /etc/systemd/system/bluetooth.service.d/override.conf << 'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/libexec/bluetooth/bluetoothd --noplugin=deviceinfo,midi
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart bluetooth
+```
+
+> **已知問題**：BlueZ 5.82 的 `--noplugin` 可能無法阻止 built-in plugin 載入。
+> 若此方法無效，需用 debug log 確認：
+> ```bash
+> sudo systemctl stop bluetooth
+> sudo /usr/libexec/bluetooth/bluetoothd -n -d --noplugin=deviceinfo,midi 2>&1 | grep -iE "plugin|Excluding|deviceinfo|midi|Loading"
+> ```
+>
+> **方法二（備用）**：若 `--noplugin` 確實無效，可修改原始碼移除這兩個 plugin 後重新編譯。
+
 **Q: 廣播註冊失敗**
 
 ```bash
@@ -707,7 +777,7 @@ sudo btmgmt le on
 
 ## 版本資訊
 
-- 文件版本：1.1
+- 文件版本：1.3
 - 適用 BlueZ 版本：5.82
 - 測試環境：Raspberry Pi OS (Kernel 6.12.47+rpt-rpi-v8)
 - 最後更新：2026-02-07
