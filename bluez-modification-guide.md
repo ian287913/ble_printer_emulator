@@ -20,29 +20,34 @@
 
 | 步驟 | 狀態 | 備註 |
 |------|------|------|
-| 1. 修改項目總覽 | ✅ 完成 | |
+| 1. 修改項目總覽 | ✅ 完成 | 新增「停用內建 DIS」項目 |
 | 2. 準備工作環境 | ✅ 完成 | |
-| 3. 修改原始碼 | ✅ 完成 | 5 項修改全部完成 |
-| 4. 編譯安裝 | ✅ 完成 | configure 需額外參數 |
-| 5. 設定 BlueZ 組態 | ✅ 完成 | 含 systemd override (`--noplugin`) |
-| 6. 重啟服務並測試 | ✅ 完成 | bluetoothd 5.82 運行中 |
+| 3. 修改原始碼 | 🔧 需重新編譯 | 新增 3.6 節修改 `gatt-database.c` |
+| 4. 編譯安裝 | 🔧 需重新執行 | 修改程式碼後需重新編譯 |
+| 5. 設定 BlueZ 組態 | ✅ 完成 | 可移除 `--noplugin` 設定 |
+| 6. 重啟服務並測試 | 🔧 待執行 | 重新編譯後需重啟 |
 | 7. 建立測試用的 GATT Server | ✅ 完成 | 7 Services 完整模擬 |
-| 8. 驗證修改是否成功 | ✅ 完成 | 連線/寫入/通知全部通過 |
+| 8. 驗證修改是否成功 | 🔧 待執行 | 需確認只有一個 DIS |
 | 9. 還原方法 | 📋 備用 | |
 
 ### 待處理項目
 
 | 項目 | 狀態 | 說明 |
 |------|------|------|
-| 移除重複 Device Information | 🔧 調查中 | BlueZ 內建 `deviceinfo` plugin 多註冊一個只含 PnP ID 的 0x180A Service；`--noplugin=deviceinfo` 已傳入但未生效，需用 debug log 確認原因 |
-| 移除 MIDI BLE Service | 🔧 調查中 | BlueZ 內建 `midi` plugin 多註冊 03b80e5a-... Service；`--noplugin=midi` 同樣未生效 |
+| 移除重複 Device Information | ✅ 已解決 | 需修改 `src/gatt-database.c` 註解掉 `populate_devinfo_service()` |
+| 移除 MIDI BLE Service | ✅ 已確認 | MIDI 未編譯進目前的 bluetoothd；若仍看到此服務需另外排查 |
 
-**目前排查進度：**
-- [x] main.conf `DisablePlugins` → BlueZ 5.82 不支援此設定鍵
-- [x] systemd override `--noplugin=deviceinfo,midi` → 已套用，`ps aux` 確認參數有傳入
-- [x] `grep BLUETOOTH_PLUGIN_DEFINE` → 確認 plugin 名稱為 `deviceinfo` 和 `midi`
-- [ ] 用 debug 模式 (`bluetoothd -n -d`) 確認 plugin 是否確實被 exclude 或仍被載入
-- [ ] 若 `--noplugin` 無法阻止載入，可能需修改原始碼移除這兩個 plugin 後重新編譯
+**問題根因分析：**
+
+1. **Device Information Service (0x180A)**
+   - `--noplugin=deviceinfo` **無效**的原因：`deviceinfo` plugin 是用於**讀取遠端裝置**的 DIS，不是建立本地服務
+   - 本地 DIS 服務是由 `src/gatt-database.c:populate_devinfo_service()` 建立的
+   - **解決方案**：修改原始碼，註解掉 `populate_devinfo_service(database);` 呼叫
+
+2. **MIDI Service (03b80e5a-...)**
+   - 確認 `src/builtin.h` 中**沒有** midi 相關定義
+   - MIDI 功能是編譯選項 (`--enable-midi`)，預設關閉
+   - 若仍看到 MIDI 服務，可能來自系統原本的 bluetoothd 或其他程式
 
 ---
 
@@ -54,6 +59,7 @@
 | 調整 GATT 權限預設值 | 避免自動要求加密 | 必要 |
 | 設定 IO Capability 為 NoInputNoOutput | 模擬簡單裝置 | 建議 |
 | 停用 Secure Connections | 某些舊手機相容性 | 視情況 |
+| **停用內建 Device Information Service** | **避免與 Python 腳本重複** | **必要** |
 
 ---
 
@@ -173,6 +179,40 @@ chan->sec_level = BT_ATT_SECURITY_LOW;  /* 強制使用最低安全等級 */
 ```
 
 > **注意**：原指引寫 `att->sec_level`，但實際上 `sec_level` 是 `struct bt_att_chan` 的成員，應使用 `chan->sec_level`。
+
+### 3.6 停用內建 Device Information Service
+
+BlueZ 會自動建立一個只含 PnP ID 的 Device Information Service (0x180A)，會與 Python 腳本建立的完整 DIS 重複。
+
+編輯 `src/gatt-database.c`：
+
+```bash
+nano src/gatt-database.c
+```
+
+找到約第 1516 行的 `populate_devinfo_service(database);` 呼叫，將其註解掉：
+
+**修改前（約第 1514-1516 行）：**
+
+```c
+	populate_gap_service(database);
+	populate_gatt_service(database);
+	populate_devinfo_service(database);
+```
+
+**修改後：**
+
+```c
+	populate_gap_service(database);
+	populate_gatt_service(database);
+	/* 停用內建 Device Information Service，改由 Python 腳本提供完整 DIS */
+	/* populate_devinfo_service(database); */
+```
+
+> **原理說明**：
+> - `--noplugin=deviceinfo` 無法停用此服務，因為 `deviceinfo` plugin 是用於讀取遠端裝置的 DIS
+> - 本地 GATT 服務是由 `gatt-database.c` 直接建立的，與 plugin 系統無關
+> - 註解掉此行後，BlueZ 不會自動註冊 DIS，由 Python 腳本負責提供完整的 Device Information
 
 ---
 
@@ -655,8 +695,8 @@ GATT 服務已註冊
 - [x] 寫入 ff02 後 ff01 收到 ACK 通知（0x00）
 - [x] Device Information 可讀取（Manufacturer, Model 等）
 - [x] 終端機顯示所有操作的 log
-- [ ] 只有一個 Device Information Service（無 BlueZ 內建重複）
-- [ ] 無多餘的 MIDI BLE Service
+- [ ] 只有一個 Device Information Service（無 BlueZ 內建重複）→ **套用 3.6 節修改後重新編譯即可解決**
+- [x] 無多餘的 MIDI BLE Service → **確認 MIDI 未編譯進 bluetoothd**
 
 ---
 
@@ -731,31 +771,37 @@ sudo /usr/libexec/bluetooth/bluetoothd -n -d
 
 這是因為缺少 `ObjectManager` 介面。確保 `Application` 類別有實作 `GetManagedObjects` 方法。
 
-**Q: 出現多餘的 Device Information 或 MIDI Service**
+**Q: 出現多餘的 Device Information Service**
 
-BlueZ 內建 `deviceinfo` plugin 會自動註冊一個只有 PnP ID 的 Device Information Service，
-`midi` plugin 會註冊 MIDI BLE Service。
+BlueZ 會自動建立一個只含 PnP ID 的 Device Information Service (0x180A)。
 
-**方法一**：透過 systemd override 傳入 `--noplugin` 參數：
+> **重要**：`--noplugin=deviceinfo` **無法**解決此問題！
+>
+> **原因**：
+> - `deviceinfo` plugin 是用於**讀取遠端裝置**的 DIS，不是建立本地服務
+> - 本地 DIS 是由 `src/gatt-database.c:populate_devinfo_service()` 直接建立的
+
+**正確解決方法**：修改 `src/gatt-database.c`，註解掉 `populate_devinfo_service(database);`（參見 3.6 節），然後重新編譯。
+
+**Q: 出現多餘的 MIDI BLE Service**
+
+MIDI 功能是編譯選項（`--enable-midi`），預設為關閉。確認方式：
+
 ```bash
-sudo mkdir -p /etc/systemd/system/bluetooth.service.d
-sudo tee /etc/systemd/system/bluetooth.service.d/override.conf << 'EOF'
-[Service]
-ExecStart=
-ExecStart=/usr/libexec/bluetooth/bluetoothd --noplugin=deviceinfo,midi
-EOF
-sudo systemctl daemon-reload
-sudo systemctl restart bluetooth
+# 檢查 MIDI 是否編譯進 bluetoothd
+strings /usr/libexec/bluetooth/bluetoothd | grep -i midi
+# 若無輸出表示 MIDI 未編譯
 ```
 
-> **已知問題**：BlueZ 5.82 的 `--noplugin` 可能無法阻止 built-in plugin 載入。
-> 若此方法無效，需用 debug log 確認：
-> ```bash
-> sudo systemctl stop bluetooth
-> sudo /usr/libexec/bluetooth/bluetoothd -n -d --noplugin=deviceinfo,midi 2>&1 | grep -iE "plugin|Excluding|deviceinfo|midi|Loading"
-> ```
->
-> **方法二（備用）**：若 `--noplugin` 確實無效，可修改原始碼移除這兩個 plugin 後重新編譯。
+若仍看到 MIDI 服務，可能來自：
+1. 系統原本安裝的 bluetoothd（非修改版）
+2. 其他程式提供的 GATT 服務
+
+確保使用的是修改後編譯的 bluetoothd：
+```bash
+which bluetoothd
+bluetoothd --version
+```
 
 **Q: 廣播註冊失敗**
 
@@ -780,4 +826,4 @@ sudo btmgmt le on
 - 文件版本：1.3
 - 適用 BlueZ 版本：5.82
 - 測試環境：Raspberry Pi OS (Kernel 6.12.47+rpt-rpi-v8)
-- 最後更新：2026-02-07
+- 最後更新：2026-02-0
