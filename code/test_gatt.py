@@ -7,6 +7,7 @@ BT-B36 熱感印表機 BLE 完整模擬器
 """
 
 import subprocess
+import time
 import dbus
 import dbus.service
 import dbus.mainloop.glib
@@ -447,7 +448,18 @@ def main():
 
     adapter_path = '/org/bluez/hci0'
 
-    # 設定 adapter
+    # 模擬真實 BT-B36 的 MAC 地址（需先關閉 adapter 才能修改）
+    # 全部透過 btmgmt 完成，避免 D-Bus 物件在 power off 後失效
+    subprocess.run(['sudo', 'btmgmt', '--index', '0', 'power', 'off'], check=False)
+    subprocess.run(
+        ['sudo', 'btmgmt', '--index', '0', 'public-addr', '10:23:81:3F:89:B5'],
+        check=False,
+    )
+    subprocess.run(['sudo', 'btmgmt', '--index', '0', 'power', 'on'], check=False)
+    time.sleep(1)  # 等待 BlueZ 重新註冊 D-Bus 物件
+    print('已設定 MAC 地址: 10:23:81:3F:89:B5')
+
+    # 設定 adapter（此時 D-Bus 物件已重新建立）
     adapter = dbus.Interface(
         bus.get_object(BLUEZ_SERVICE, adapter_path),
         DBUS_PROP_IFACE,
