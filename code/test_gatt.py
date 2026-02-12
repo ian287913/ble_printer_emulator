@@ -12,6 +12,7 @@ import dbus
 import dbus.service
 import dbus.mainloop.glib
 from gi.repository import GLib
+from escpos_decoder import ESCPOSDecoder
 
 # === D-Bus 介面常數 ===
 BLUEZ_SERVICE = 'org.bluez'
@@ -244,11 +245,12 @@ class Characteristic(dbus.service.Object):
 # === 印表機 Write Characteristic（ff02 專用）===
 
 class PrintWriteCharacteristic(Characteristic):
-    """收到列印資料後解析內容，並透過 ff01 回傳 ACK"""
+    """收到列印資料後透過 ESC/POS 解碼器解析，並透過 ff01 回傳智慧回覆"""
 
     def __init__(self, bus, index, service, uuid, flags):
         super().__init__(bus, index, service, uuid, flags)
         self.notify_chrc = None
+        self.decoder = ESCPOSDecoder()
 
     def set_notify_chrc(self, chrc):
         self.notify_chrc = chrc
@@ -256,29 +258,23 @@ class PrintWriteCharacteristic(Characteristic):
     @dbus.service.method(GATT_CHRC_IFACE, in_signature='aya{sv}', out_signature='')
     def WriteValue(self, value, options):
         data = bytes(value)
-        print(f'  PRINT [{self.uuid}]: {data.hex()} ({len(data)} bytes)')
-
-        # 嘗試解析內容
-        if len(data) > 0 and data[0] == 0x1B:
-            print(f'         ESC command: {data[1:].hex() if len(data) > 1 else ""}')
-        elif len(data) > 0 and data[0] == 0x10:
-            print(f'         DLE command: {data[1:].hex() if len(data) > 1 else ""}')
-        else:
-            try:
-                text = data.decode('utf-8', errors='replace')
-                print(f'         Text: {text}')
-            except Exception:
-                pass
-
         self.value = list(value)
 
-        # 透過 ff01 回傳 ACK（模擬印表機就緒狀態 0x00）
-        if self.notify_chrc:
-            GLib.idle_add(self._send_ack)
+        # 透過解碼器解析指令並取得回覆
+        commands, responses = self.decoder.feed(data)
 
-    def _send_ack(self):
+        # 智慧回覆：依解碼結果決定回傳內容
+        if self.notify_chrc and responses:
+            for resp in responses:
+                GLib.idle_add(lambda r=resp: self._send_response(r))
+        elif self.notify_chrc and not responses:
+            # 一般指令：回傳標準 ACK
+            GLib.idle_add(lambda: self._send_response(bytes([0x00])))
+
+    def _send_response(self, data):
+        """透過 ff01 發送回覆"""
         if self.notify_chrc:
-            self.notify_chrc.send_notification([0x00])
+            self.notify_chrc.send_notification(list(data))
         return False
 
 

@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 BLE peripheral emulator that makes a Raspberry Pi simulate a BT-B36 thermal printer. Clients (e.g. mobile apps) can connect via BLE and send print commands without pairing or encryption. The project language is Traditional Chinese (zh-TW).
 
-Two main parts:
+Three main parts:
 1. **BlueZ 5.82 source modifications** — patches to disable security/pairing in the Linux Bluetooth stack (documented in `bluez-modification-guide.md`)
 2. **Python GATT server** (`code/test_gatt.py`) — registers a BLE GATT service via D-Bus that accepts write commands and supports notifications
+3. **ESC/POS 解碼器** (`code/escpos_decoder.py`) — 狀態機式指令解碼器 + 智慧回覆產生器（詳見 `ESCPOS-guide.md`）
 
 ## Running the GATT Server
 
@@ -34,9 +35,14 @@ Python GATT Server (test_gatt.py)
   ├── Application — ObjectManager, owns services
   ├── Advertisement — BLE advertising as "BT-B36"
   ├── PrinterService — GATT service UUID ff00
-  │     ├── WriteCharacteristic (ff02) — receives print data
-  │     └── NotifyCharacteristic (ff01) — sends status back
-  └── main() — sets up adapter, registers GATT app + advertisement, runs GLib loop
+  │     ├── WriteCharacteristic (ff02) — receives print data → ESCPOSDecoder
+  │     └── NotifyCharacteristic (ff01) — sends smart responses back
+  ├── main() — sets up adapter, registers GATT app + advertisement, runs GLib loop
+  │
+  └── ESCPOSDecoder (escpos_decoder.py)
+        ├── 狀態機解析器 — 處理跨 BLE 封包的指令邊界
+        ├── 智慧回覆產生器 — 偵測查詢指令回傳正確狀態
+        └── Log 記錄器 — logs/escpos_YYYYMMDD_HHMMSS.log
 ```
 
 All D-Bus objects live under `/org/bluez/example/`. The adapter used is `hci0`.
@@ -50,6 +56,18 @@ All D-Bus objects live under `/org/bluez/example/`. The adapter used is `hci0`.
 | Notify (status) | `0000ff01-0000-1000-8000-00805f9b34fb` |
 
 The real BT-B36 device exposes 7 services (see `printer_info.json`); only the primary print service (ff00) is emulated so far.
+
+## ESC/POS 解碼器
+
+`code/escpos_decoder.py` 實作完整的 ESC/POS 指令解碼與智慧回覆功能。詳細技術文件請參考 `ESCPOS-guide.md`。
+
+**核心流程：**
+1. `PrintWriteCharacteristic.WriteValue()` 收到 BLE 寫入資料
+2. 資料送入 `ESCPOSDecoder.feed(data)` 解碼
+3. 回傳 `(commands, responses)` — commands 記錄到 log，responses 透過 ff01 notify 回傳
+4. 狀態查詢指令（DLE EOT, GS I, GS r）會產生對應的智慧回覆；其他指令回傳標準 ACK (`0x00`)
+
+**Log 位置：** `logs/escpos_YYYYMMDD_HHMMSS.log`（自動建立，同時輸出到終端）
 
 ## BlueZ Modifications
 
