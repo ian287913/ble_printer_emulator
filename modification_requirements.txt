@@ -1,0 +1,136 @@
+===============================================================================
+BlueZ 5.82 額外修改需求 — 解決 POS App 連線失敗問題
+===============================================================================
+
+日期：2026-02-20
+依據：btmon 封包分析（logs/btmon_init.log、logs/btmon_try_connect.log）
+
+===============================================================================
+1. 問題描述
+===============================================================================
+
+POS App 連線到模擬器後，數秒內顯示連線成功，隨後轉為連線失敗，無法列印。
+
+===============================================================================
+2. 根因分析（依 btmon 封包追蹤）
+===============================================================================
+
+【問題 A】BlueZ 主動發送 SMP Security Request（核心問題）
+
+  btmon_try_connect.log 封包 #10：
+  ┌─────────────────────────────────────────────────────────────┐
+  │ < ACL Data TX: Handle 64 flags 0x00 dlen 6                 │
+  │     SMP: Security Request (0x0b) len 1                     │
+  │       Auth requirement: Bonding, No MITM, Legacy (0x01)    │
+  └─────────────────────────────────────────────────────────────┘
+
+  BLE 連線建立後，BlueZ 立刻向客戶端發送 SMP Security Request。
+  真正的 BT-B36 印表機不會發送此請求，它完全不需要配對即可操作。
+
+  連鎖反應：
+  1) 手機端收到 Security Request → 認為需要配對
+  2) 手機發送 Pairing Request（封包 #154）：
+       - IO capability: KeyboardDisplay (0x04)
+       - Auth requirement: Bonding, MITM, SC, CT2 (0x2d)
+  3) Pi 回覆 Pairing Response（封包 #155）：
+       - IO capability: NoInputNoOutput (0x03)
+       - Auth requirement: Bonding, MITM, Legacy (0x05)
+  4) SC (Secure Connections) vs Legacy 不相容 → 配對失敗 → 連線斷開
+
+  結論：只要阻止 BlueZ 發送 SMP Security Request，手機端就不會嘗試配對，
+        連線可以保持在無安全層的狀態下正常運作。
+
+【問題 B】bondable 被 bluetoothd 覆蓋（次要問題）
+
+  btmon_init.log 中的時序：
+  1) test_gatt.py 呼叫 btmgmt bondable off → 成功關閉 bondable
+  2) bluetoothd 內部邏輯立刻又執行 Set Bondable: Enabled (0x01)
+
+  這導致 bondable 實際上永遠是開啟的，腳本的設定被 daemon 覆蓋。
+
+===============================================================================
+3. 修改需求
+===============================================================================
+
+【修改 1】阻止 BlueZ 發送 SMP Security Request（必要）
+---------------------------------------------------------------------------
+
+  目標：BLE 連線建立後，不發送 SMP Security Request (opcode 0x0b)
+
+  搜尋方向：
+  - src/device.c — 函式 device_request_security() 或類似邏輯
+    - 搜尋關鍵字：BT_SECURITY_LOW, BT_SECURITY_MEDIUM, security_req
+    - 當新 LE 連線建立時，BlueZ 會檢查是否需要安全性並發送 Security Request
+    - 需要找到觸發點並跳過
+
+  - src/shared/att.c — 可能在 ATT 層觸發安全升級
+    - 已有修改（bt_att_set_security 直接返回 true），但可能不夠
+    - 搜尋 SMP 相關呼叫
+
+  - profiles/ 目錄下的 profile — 某些 profile 在連線時會主動要求安全性
+    - 搜尋 btd_request_authorization 或 bt_att_security
+
+  具體修改方式（二擇一）：
+  a) 找到發送 Security Request 的函式，加上條件判斷跳過
+  b) 在 SMP 層（src/shared/smp.c 或 emulator/smp.c）攔截 Security Request
+     的封包構建，直接返回不發送
+
+  驗證方式：
+  - 用 btmon 確認連線後不再出現 "SMP: Security Request" 封包
+  - POS App 應能連線並直接進行 GATT 操作，不觸發配對流程
+
+
+【修改 2】防止 bluetoothd 覆蓋 bondable 設定（建議）
+---------------------------------------------------------------------------
+
+  目標：讓 bondable off 設定持久有效，不被 bluetoothd 重新覆蓋
+
+  搜尋方向：
+  - src/adapter.c — 搜尋 MGMT_SETTING_BONDABLE 或 set_bondable
+    - bluetoothd 在初始化或 agent 註冊時會重新設定 bondable
+    - 可將 bondable 的預設值改為 false
+
+  - /etc/bluetooth/main.conf — 嘗試加入設定：
+    [General]
+    Bondable = false
+
+  替代方案：如果修改 1 成功阻止了 SMP Security Request，
+  此項修改可能不再必要（因為不會進入配對流程）。
+
+===============================================================================
+4. 已完成的修改（參考 bluez-modification-guide.md）
+===============================================================================
+
+  以下 5 項修改已實施，但不足以解決本問題：
+
+  1. src/shared/att.c — bt_att_set_security() 直接返回 true
+  2. src/shared/gatt-server.c — check_permissions() 返回 0
+  3. src/adapter.c — IO Capability 設為 NoInputNoOutput (0x03)
+  4. src/adapter.c — 註解掉 MGMT_SETTING_SECURE_CONN
+  5. src/shared/att.c — chan->sec_level = BT_ATT_SECURITY_LOW
+
+  這些修改跳過了 GATT 層的權限檢查和安全連線，
+  但沒有阻止 SMP 層主動發起 Security Request。
+
+===============================================================================
+5. 測試流程
+===============================================================================
+
+  修改完成後：
+  1. 重新編譯安裝 BlueZ：
+       cd ~/bluez-5.82 && make -j4 && sudo make install
+       sudo systemctl daemon-reload && sudo systemctl restart bluetooth
+
+  2. 啟動模擬器：
+       sudo python3 code/test_gatt.py
+
+  3. 開啟 btmon 監控：
+       sudo btmon | tee logs/btmon_test.log
+
+  4. 用 POS App 連線，確認：
+     [ ] btmon 中不出現 "SMP: Security Request"
+     [ ] btmon 中不出現 "SMP: Pairing Request / Pairing Response"
+     [ ] App 顯示連線成功且維持連線
+     [ ] App 能正常發送列印指令
+
+===============================================================================
