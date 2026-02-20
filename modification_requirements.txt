@@ -4,6 +4,7 @@ BlueZ 5.82 額外修改需求 — 解決 POS App 連線失敗問題
 
 日期：2026-02-20
 依據：btmon 封包分析（logs/btmon_init.log、logs/btmon_try_connect.log）
+狀態：✅ 已完成並驗證通過
 
 ===============================================================================
 1. 問題描述
@@ -48,75 +49,98 @@ POS App 連線到模擬器後，數秒內顯示連線成功，隨後轉為連線
 
   這導致 bondable 實際上永遠是開啟的，腳本的設定被 daemon 覆蓋。
 
+  根因：src/adapter.c 的 adapter_set_io_capability() 函式中，
+  當 agent 註冊時（io_cap 為有效值），會重新啟用 bondable：
+    if (!(adapter->current_settings & MGMT_SETTING_BONDABLE))
+        set_mode(adapter, MGMT_OP_SET_BONDABLE, 0x01);
+
 ===============================================================================
-3. 修改需求
+3. 修改內容（✅ 已完成）
 ===============================================================================
 
-【修改 1】阻止 BlueZ 發送 SMP Security Request（必要）
+【修改 6】阻止安全等級提升，防止 SMP Security Request（✅ 已完成）
 ---------------------------------------------------------------------------
 
-  目標：BLE 連線建立後，不發送 SMP Security Request (opcode 0x0b)
+  檔案：src/device.c
+  函式：device_attach_att()（約第 5943 行）
+  方式：用 #if 0 停用安全等級提升邏輯
 
-  搜尋方向：
-  - src/device.c — 函式 device_request_security() 或類似邏輯
-    - 搜尋關鍵字：BT_SECURITY_LOW, BT_SECURITY_MEDIUM, security_req
-    - 當新 LE 連線建立時，BlueZ 會檢查是否需要安全性並發送 Security Request
-    - 需要找到觸發點並跳過
+  原始碼：
+    if (sec_level == BT_IO_SEC_LOW && dev->le_state.paired) {
+        DBG("Elevating security level since LTK is available");
+        sec_level = BT_IO_SEC_MEDIUM;
+        bt_io_set(io, &gerr, BT_IO_OPT_SEC_LEVEL, sec_level,
+                            BT_IO_OPT_INVALID);
+        ...
+    }
 
-  - src/shared/att.c — 可能在 ATT 層觸發安全升級
-    - 已有修改（bt_att_set_security 直接返回 true），但可能不夠
-    - 搜尋 SMP 相關呼叫
+  修改後：
+    /* 跳過安全等級提升，避免觸發 SMP Security Request。
+     * 原本會對已配對裝置提升至 BT_IO_SEC_MEDIUM，導致 kernel
+     * 發送 SMP Security Request (0x0b)，使 POS App 配對失敗。
+     */
+    #if 0
+    if (sec_level == BT_IO_SEC_LOW && dev->le_state.paired) {
+        ...
+    }
+    #endif
 
-  - profiles/ 目錄下的 profile — 某些 profile 在連線時會主動要求安全性
-    - 搜尋 btd_request_authorization 或 bt_att_security
-
-  具體修改方式（二擇一）：
-  a) 找到發送 Security Request 的函式，加上條件判斷跳過
-  b) 在 SMP 層（src/shared/smp.c 或 emulator/smp.c）攔截 Security Request
-     的封包構建，直接返回不發送
-
-  驗證方式：
-  - 用 btmon 確認連線後不再出現 "SMP: Security Request" 封包
-  - POS App 應能連線並直接進行 GATT 操作，不觸發配對流程
+  原理：device_attach_att() 在 BLE 連線建立時被呼叫。若裝置曾經配對
+  （dev->le_state.paired），會透過 bt_io_set() 直接對 L2CAP socket
+  呼叫 setsockopt(BT_SECURITY, MEDIUM)，觸發 kernel 發送 SMP
+  Security Request (0x0b)。此路徑繞過了已修改的 bt_att_set_security()，
+  因此需要在此處額外攔截。
 
 
-【修改 2】防止 bluetoothd 覆蓋 bondable 設定（建議）
+【修改 7】防止 bluetoothd 覆蓋 bondable 設定（✅ 已完成）
 ---------------------------------------------------------------------------
 
-  目標：讓 bondable off 設定持久有效，不被 bluetoothd 重新覆蓋
+  檔案：src/adapter.c
+  函式：adapter_set_io_capability()（約第 9077 行）
+  方式：用 #if 0 停用 agent 註冊時重新啟用 bondable 的邏輯
 
-  搜尋方向：
-  - src/adapter.c — 搜尋 MGMT_SETTING_BONDABLE 或 set_bondable
-    - bluetoothd 在初始化或 agent 註冊時會重新設定 bondable
-    - 可將 bondable 的預設值改為 false
+  原始碼：
+    if (!(adapter->current_settings & MGMT_SETTING_BONDABLE))
+        set_mode(adapter, MGMT_OP_SET_BONDABLE, 0x01);
 
-  - /etc/bluetooth/main.conf — 嘗試加入設定：
-    [General]
-    Bondable = false
+  修改後：
+    /* 不再於 agent 註冊時重新啟用 bondable，
+     * 避免覆蓋 btmgmt bondable off 的設定。
+     */
+    #if 0
+    if (!(adapter->current_settings & MGMT_SETTING_BONDABLE))
+        set_mode(adapter, MGMT_OP_SET_BONDABLE, 0x01);
+    #endif
 
-  替代方案：如果修改 1 成功阻止了 SMP Security Request，
-  此項修改可能不再必要（因為不會進入配對流程）。
+  原理：當 D-Bus agent 註冊時，adapter_set_io_capability() 被呼叫，
+  若 btd_opts.pairable 為 false（預設值）且 bondable 未啟用，
+  會自動重新啟用 bondable，覆蓋 test_gatt.py 透過 btmgmt 設定的
+  bondable off。
 
 ===============================================================================
-4. 已完成的修改（參考 bluez-modification-guide.md）
+4. 所有已完成的修改總覽（共 7 項）
 ===============================================================================
 
-  以下 5 項修改已實施，但不足以解決本問題：
-
+  修改 1-5（參考 bluez-modification-guide.md）：
   1. src/shared/att.c — bt_att_set_security() 直接返回 true
   2. src/shared/gatt-server.c — check_permissions() 返回 0
   3. src/adapter.c — IO Capability 設為 NoInputNoOutput (0x03)
   4. src/adapter.c — 註解掉 MGMT_SETTING_SECURE_CONN
   5. src/shared/att.c — chan->sec_level = BT_ATT_SECURITY_LOW
 
-  這些修改跳過了 GATT 層的權限檢查和安全連線，
-  但沒有阻止 SMP 層主動發起 Security Request。
+  修改 6-7（本文件）：
+  6. src/device.c — 停用 device_attach_att() 安全等級提升
+  7. src/adapter.c — 停用 agent 註冊時重新啟用 bondable
+
+  修改 1-5 跳過了 GATT 層的權限檢查和安全連線。
+  修改 6-7 阻止了 SMP 層主動發起 Security Request 並防止 bondable 被覆蓋。
 
 ===============================================================================
-5. 測試流程
+5. 測試結果（✅ 通過）
 ===============================================================================
 
-  修改完成後：
+  驗證日期：2026-02-20
+
   1. 重新編譯安裝 BlueZ：
        cd ~/bluez-5.82 && make -j4 && sudo make install
        sudo systemctl daemon-reload && sudo systemctl restart bluetooth
@@ -128,9 +152,9 @@ POS App 連線到模擬器後，數秒內顯示連線成功，隨後轉為連線
        sudo btmon | tee logs/btmon_test.log
 
   4. 用 POS App 連線，確認：
-     [ ] btmon 中不出現 "SMP: Security Request"
-     [ ] btmon 中不出現 "SMP: Pairing Request / Pairing Response"
-     [ ] App 顯示連線成功且維持連線
-     [ ] App 能正常發送列印指令
+     [✅] btmon 中不出現 "SMP: Security Request"
+     [✅] btmon 中不出現 "SMP: Pairing Request / Pairing Response"
+     [✅] App 顯示連線成功且維持連線
+     [✅] App 能正常發送列印指令
 
 ===============================================================================

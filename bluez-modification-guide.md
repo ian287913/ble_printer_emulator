@@ -60,6 +60,8 @@
 | 設定 IO Capability 為 NoInputNoOutput | 模擬簡單裝置 | 建議 |
 | 停用 Secure Connections | 某些舊手機相容性 | 視情況 |
 | **停用內建 Device Information Service** | **避免與 Python 腳本重複** | **必要** |
+| **停用安全等級提升** | **防止 kernel 發送 SMP Security Request** | **必要** |
+| **停用 bondable 自動啟用** | **防止 bluetoothd 覆蓋 bondable off** | **建議** |
 
 ---
 
@@ -213,6 +215,68 @@ nano src/gatt-database.c
 > - `--noplugin=deviceinfo` 無法停用此服務，因為 `deviceinfo` plugin 是用於讀取遠端裝置的 DIS
 > - 本地 GATT 服務是由 `gatt-database.c` 直接建立的，與 plugin 系統無關
 > - 註解掉此行後，BlueZ 不會自動註冊 DIS，由 Python 腳本負責提供完整的 Device Information
+
+### 3.7 停用安全等級提升（防止 SMP Security Request）
+
+編輯 `src/device.c`，找到 `device_attach_att()` 函式中的安全等級提升邏輯（約第 5943 行），用 `#if 0` 停用：
+
+**修改前：**
+
+```c
+	if (sec_level == BT_IO_SEC_LOW && dev->le_state.paired) {
+		DBG("Elevating security level since LTK is available");
+
+		sec_level = BT_IO_SEC_MEDIUM;
+		bt_io_set(io, &gerr, BT_IO_OPT_SEC_LEVEL, sec_level,
+							BT_IO_OPT_INVALID);
+		if (gerr) {
+			error("bt_io_set: %s", gerr->message);
+			g_error_free(gerr);
+			return false;
+		}
+	}
+```
+
+**修改後：**
+
+```c
+	/* 跳過安全等級提升，避免觸發 SMP Security Request。
+	 * 原本會對已配對裝置提升至 BT_IO_SEC_MEDIUM，導致 kernel
+	 * 發送 SMP Security Request (0x0b)，使 POS App 配對失敗。
+	 */
+#if 0
+	if (sec_level == BT_IO_SEC_LOW && dev->le_state.paired) {
+		...
+	}
+#endif
+```
+
+> **原理說明**：此路徑透過 `bt_io_set()` → `setsockopt(BT_SECURITY)` 直接操作 L2CAP socket，繞過了 3.1 節修改的 `bt_att_set_security()`。停用後 kernel 不再收到安全等級提升請求，不會發送 SMP Security Request (0x0b)。
+
+### 3.8 停用 bondable 自動啟用
+
+編輯 `src/adapter.c`，找到 `adapter_set_io_capability()` 函式中重新啟用 bondable 的邏輯（約第 9077 行），用 `#if 0` 停用：
+
+**修改前：**
+
+```c
+		if (!(adapter->current_settings & MGMT_SETTING_BONDABLE))
+			set_mode(adapter, MGMT_OP_SET_BONDABLE, 0x01);
+```
+
+**修改後：**
+
+```c
+		/* 不再於 agent 註冊時重新啟用 bondable，
+		 * 避免覆蓋 btmgmt bondable off 的設定。
+		 */
+#if 0
+		if (!(adapter->current_settings & MGMT_SETTING_BONDABLE))
+			set_mode(adapter, MGMT_OP_SET_BONDABLE, 0x01);
+#endif
+```
+
+> **原理說明**：當 D-Bus agent 註冊時會呼叫此函式，若 `btd_opts.pairable` 為 false（預設值），會自動重新啟用 bondable，覆蓋 `btmgmt bondable off` 的設定。
 
 ---
 
@@ -823,7 +887,7 @@ sudo btmgmt le on
 
 ## 版本資訊
 
-- 文件版本：1.3
+- 文件版本：1.4
 - 適用 BlueZ 版本：5.82
 - 測試環境：Raspberry Pi OS (Kernel 6.12.47+rpt-rpi-v8)
-- 最後更新：2026-02-0
+- 最後更新：2026-02-2
