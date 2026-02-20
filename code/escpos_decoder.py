@@ -61,6 +61,7 @@ ESC_COMMANDS = {
     0x70: ('ESC p', '產生錢箱脈衝', 2),
     0x63: ('ESC c', '選擇列印頁模式', 1),  # ESC c 有子命令
     0x76: ('ESC v', '傳送紙張感測器狀態', 0),
+    0x69: ('ESC i', '全切紙', 0),
     0x7B: ('ESC {', '選擇倒置列印', 1),
     # 特殊處理：ESC * (點陣圖), ESC D (定位)
 }
@@ -795,7 +796,7 @@ class ESCPOSDecoder:
     @staticmethod
     def _decode_text(data: bytes) -> str:
         """嘗試以多種編碼解碼文字"""
-        for encoding in ('gbk', 'utf-8', 'latin-1'):
+        for encoding in ('gb18030', 'utf-8', 'latin-1'):
             try:
                 return data.decode(encoding)
             except (UnicodeDecodeError, ValueError):

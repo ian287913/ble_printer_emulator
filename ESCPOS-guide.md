@@ -95,6 +95,7 @@ class PrintWriteCharacteristic(Characteristic):
 | `0x42` | ESC B | 選擇/取消黑白反轉 | 1 |
 | `0x47` | ESC G | 選擇雙重列印 | 1 |
 | `0x70` | ESC p | 產生錢箱脈衝 | 2 |
+| `0x69` | ESC i | 全切紙 | 0 |
 | `0x76` | ESC v | 傳送紙張感測器狀態 | 0 |
 | `0x7B` | ESC { | 選擇倒置列印 | 1 |
 | `0x2A` | ESC * | 選擇位元映像模式 | **變長** |
@@ -140,7 +141,7 @@ class PrintWriteCharacteristic(Characteristic):
 
 ### 6. 文字資料
 
-連續的非指令位元組會被收集為文字資料，嘗試以下編碼順序解碼：GBK → UTF-8 → Latin-1。
+連續的非指令位元組會被收集為文字資料，嘗試以下編碼順序解碼：GB18030 → UTF-8 → Latin-1。使用 GB18030 而非 GBK，因為 GB18030 是 GBK 的超集，涵蓋所有 Unicode 碼點，可避免部分 GBK 未映射的 byte 組合（如 `0xAE 0x94`）導致整段文字降級為 Latin-1 亂碼。
 
 ## 特殊變長指令處理
 
