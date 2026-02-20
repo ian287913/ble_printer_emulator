@@ -405,11 +405,13 @@ def build_services(bus):
     svc = Service(bus, svc_idx, 'e7810a71-73ae-499d-8c15-faa9aef0c3f2')
     svc_idx += 1
 
-    svc.add_characteristic(Characteristic(
+    # bef8d6c9: POS 端實際使用此 characteristic 寫入列印資料
+    chrc_bef8 = PrintWriteCharacteristic(
         bus, 0, svc,
         'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f',
         ['read', 'write-without-response', 'write', 'notify'],
-    ))
+    )
+    svc.add_characteristic(chrc_bef8)
     services.append(svc)
 
     # -------------------------------------------------------
@@ -431,6 +433,9 @@ def build_services(bus):
             bus, i, svc, uuid, ['read'], value=val,
         ))
     services.append(svc)
+
+    # 將 Service 6 的 bef8d6c9 也連結到 ff01，讓回覆能透過 notify 送回
+    chrc_bef8.set_notify_chrc(chrc_ff01)
 
     print(f'已建立 {len(services)} 個 Services')
     return services, chrc_ff01

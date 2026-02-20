@@ -36,6 +36,7 @@
 |------|------|------|
 | 移除重複 Device Information | ✅ 已解決 | 需修改 `src/gatt-database.c` 註解掉 `populate_devinfo_service()` |
 | 移除 MIDI BLE Service | ✅ 已確認 | MIDI 未編譯進目前的 bluetoothd；若仍看到此服務需另外排查 |
+| POS 端寫入未經 ESC/POS 解碼 | ✅ 已解決 | POS 實際寫入 `bef8d6c9`（Service 6）而非 `ff02`，已改用 `PrintWriteCharacteristic` |
 
 **問題根因分析：**
 
@@ -866,6 +867,10 @@ strings /usr/libexec/bluetooth/bluetoothd | grep -i midi
 which bluetoothd
 bluetoothd --version
 ```
+
+**Q: POS 端列印資料未寫入 ESC/POS log**
+
+POS App 實際寫入的是 Service 6 (`e7810a71`) 的 `bef8d6c9` characteristic，而非 `ff02`。需將 `bef8d6c9` 改用 `PrintWriteCharacteristic` 並連結 `chrc_ff01`，資料才會經過 ESC/POS 解碼器記錄到 log。
 
 **Q: 廣播註冊失敗**
 
